@@ -1,0 +1,66 @@
+import json
+import requests
+from typing import List, Dict, Any
+from backend.config import Settings
+
+def _sb_headers(settings: Settings, use_service_key: bool = True) -> Dict[str, str]:
+    key = settings.supabase_service_role_key if use_service_key else settings.supabase_anon_key
+    return {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+
+def embed_query(text: str, settings: Settings) -> List[float]:
+    url = f"{settings.ollama_host}/api/embeddings"
+    payload = {"model": settings.embeddings_model, "prompt": text}
+    r = requests.post(url, json=payload, timeout=60)
+    r.raise_for_status()
+    vec = r.json().get("embedding")
+    if not isinstance(vec, list):
+        raise RuntimeError("Ollama embedding response invalid")
+    return vec
+
+def embed_texts(texts: List[str], settings: Settings) -> List[List[float]]:
+    url = f"{settings.ollama_host}/api/embeddings"
+    out = []
+    for t in texts:
+        r = requests.post(url, json={"model": settings.embeddings_model, "prompt": t}, timeout=60)
+        r.raise_for_status()
+        out.append(r.json().get("embedding"))
+    return out
+
+class SupabaseVectorStore:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        if not settings.supabase_url:
+            raise ValueError("SUPABASE_URL is not set")
+        if not (settings.supabase_anon_key or settings.supabase_service_role_key):
+            raise ValueError("Supabase key is not set")
+
+    def add_documents(self, docs: List[Dict[str, Any]]):
+        contents = [d["content"] for d in docs]
+        embeddings = embed_texts(contents, self.settings)
+        rows = []
+        for d, vec in zip(docs, embeddings):
+            rows.append({
+                "content": d["content"],
+                "metadata": d.get("metadata", {}),
+                "embedding": vec
+            })
+        url = f"{self.settings.supabase_url}/rest/v1/{self.settings.documents_table}"
+        r = requests.post(url, headers=_sb_headers(self.settings, use_service_key=True), data=json.dumps(rows), timeout=120)
+        r.raise_for_status()
+        return r.json()
+
+    def match(self, query_embedding: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
+        url = f"{self.settings.supabase_url}/rest/v1/rpc/{self.settings.match_rpc}"
+        payload = {"query_embedding": query_embedding, "match_count": top_k}
+        r = requests.post(url, headers=_sb_headers(self.settings, use_service_key=False), data=json.dumps(payload), timeout=60)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Supabase RPC error {r.status_code}: {r.text}")
+        return r.json()
+
+def get_vectorstore(settings: Settings) -> 'SupabaseVectorStore':
+    return SupabaseVectorStore(settings)
