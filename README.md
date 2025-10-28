@@ -28,3 +28,7 @@ Open http://localhost:5173/
 ## Notes
 - We call PostgREST directly via `requests`, avoiding supabase python client conflicts.
 - Adjust `embedding vector(DIM)` to match your Ollama embedding model. For `nomic-embed-text` use 768 or 1024 depending on model; if 768, alter the column and reindex.
+
+## Execution
+- backend: source backend/.venv/bin/activate && uvicorn backend.app.main:app
+- frontend: npm run dev
